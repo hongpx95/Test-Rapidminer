@@ -1,0 +1,4 @@
+rmid:
+  branding:
+    headerColor: "#3a4349" # Provide a hex color code for header
+    applicationName: RapidMiner Go # Provide your application name

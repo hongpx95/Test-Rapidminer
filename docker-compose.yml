@@ -1,0 +1,796 @@
+version: "3.9"
+services:
+  rm-proxy-svc:
+    image: "${REGISTRY}rapidminer-proxy:${PROXY_VERSION}"
+    hostname: rm-proxy-svc
+    restart: always
+    environment:
+      - KEYCLOAK_BACKEND=${KEYCLOAK_BACKEND}
+      - RMSERVER_BACKEND=${RAPIDMINER_SERVER_URL}
+      - JUPYTER_BACKEND=${JUPYTER_BACKEND}
+      - JUPYTER_URL_SUFFIX=${JUPYTER_URL_SUFFIX}
+      - GRAFANA_BACKEND=${GRAFANA_BACKEND}
+      - GRAFANA_URL_SUFFIX=${GRAFANA_URL_SUFFIX}
+      - PA_BACKEND=${PA_BACKEND}
+      - PA_URL_SUFFIX=${PA_URL_SUFFIX}
+      - TOKEN_BACKEND=${TOKEN_BACKEND}
+      - TOKEN_URL_SUFFIX=${TOKEN_URL_SUFFIX}
+      - ALLOW_LE=${ALLOW_LE}
+      - LE_BACKEND=${LE_BACKEND}
+      - RTS_WEBUI_BACKEND=${RTS_WEBUI_BACKEND}
+      - RTS_WEBUI_URL_SUFFIX=${RTS_WEBUI_URL_SUFFIX}
+      - RTS_SCORING_BACKEND=${RTS_SCORING_BACKEND}
+      - RTS_SCORING_URL_SUFFIX=${RTS_SCORING_URL_SUFFIX}
+      - RTS_ADMIN_USER=${RTS_ADMIN_USER}
+      - RTS_ADMIN_PASSWORD=${RTS_ADMIN_PASSWORD}
+      - SSO_PUBLIC_URL=${SSO_PUBLIC_URL}
+      - SSO_IDP_REALM=${SSO_IDP_REALM}
+      - RTS_BASIC_AUTH=true
+      - LANDING_BACKEND=${LANDING_BACKEND}
+      - STANDPY_BACKEND=${STANDPY_BACKEND}
+      - STANDPY_URL_SUFFIX=${STANDPY_URL_SUFFIX}
+      - PASSWORD_FILE_PATH=${PASSWORD_FILE_PATH}
+      - HTTPS_CRT_PATH=${HTTPS_CRT_PATH}
+      - HTTPS_KEY_PATH=${HTTPS_KEY_PATH}
+      - HTTPS_DH_PATH=${HTTPS_DH_PATH}
+      #- DEBUG_CONF_INIT=true
+      #- WAIT_FOR_DHPARAM=true
+      - PROXY_DATA_UPLOAD_LIMIT=${PROXY_DATA_UPLOAD_LIMIT}
+      - UNPRIVILEGED_PORTS=${UNPRIVILEGED_PORTS}
+    ports:
+      - 0.0.0.0:80:80
+      - 0.0.0.0:443:443
+    networks:
+      rm-go-proxy-net:
+        aliases:
+         - rm-proxy-svc
+         - ${PUBLIC_DOMAIN}
+      rm-platform-int-net:
+        aliases:
+         - rm-proxy-svc
+         - ${PUBLIC_DOMAIN}
+      jupyterhub-user-net:
+        aliases:
+         - ${PUBLIC_DOMAIN}
+    volumes:
+      - ./ssl:/etc/nginx/ssl
+      - platform-admin-uploaded-vol:/rapidminer/platform-admin/uploaded/
+    profiles:
+      - proxy
+
+  letsencrypt-svc:
+    image: "${REGISTRY}rm-letsencrypt-client:${LE_VERSION}"
+    hostname: rm-letsencrypt-client-svc
+    restart: always
+    environment:
+    - PUBLIC_URL=${PUBLIC_URL}
+    - LETSENCRYPT_HOME=/certificates/
+    - DOMAIN=${PUBLIC_URL}
+    - WEBMASTER_MAIL=devops@rapidminer.com
+    - TZ=${TZ}
+    networks:
+      rm-platform-int-net:
+        aliases:
+        - rm-letsencrypt-client-svc
+    volumes:
+      - ./ssl:/etc/letsencrypt/
+    profiles:
+      - le
+
+  rm-keycloak-db-svc:
+    image: "${REGISTRY}postgres-9.6:${POSTGRES_VERSION}"
+    restart: always
+    hostname: rm-keycloak-db-svc
+    environment:
+      - POSTGRES_DB=${KC_DB}
+      - POSTGRES_USER=${KC_USER}
+      - POSTGRES_PASSWORD=${KC_PASSWORD}
+    volumes:
+      - keycloak-postgresql-vol:/var/lib/postgresql/data
+    networks:
+      rm-idp-db-net:
+        aliases:
+         - rm-keycloak-db-svc
+
+  rm-keycloak-svc:
+    image: "${REGISTRY}rapidminer-keycloak:${KEYCLOAK_VERSION}"
+    restart: always
+    hostname: rm-keycloak-svc
+    environment:
+      - DB_VENDOR=POSTGRES
+      - DB_ADDR=rm-keycloak-db-svc
+      - DB_DATABASE=${KC_DB}
+      - DB_USER=${KC_USER}
+      - DB_SCHEMA=public
+      - DB_PASSWORD=${KC_PASSWORD}
+      - KEYCLOAK_USER=${KEYCLOAK_USER}
+      - KEYCLOAK_PASSWORD=${KEYCLOAK_PASSWORD}
+      - PROXY_ADDRESS_FORWARDING=true
+      #- KEYCLOAK_LOGLEVEL=DEBUG
+      #- ROOT_LOGLEVEL=DEBUG
+      #- JDBC_PARAMS=ssl=true
+    depends_on:
+      - rm-keycloak-db-svc
+      - rm-proxy-svc
+    networks:
+      rm-platform-int-net:
+        aliases:
+          - rm-keycloak-svc
+      rm-idp-db-net:
+        aliases:
+          - rm-keycloak-svc
+
+  rm-init-svc:
+    image: "${REGISTRY}rapidminer-deployment-init:${INIT_VERSION}"
+    restart: "no"
+    hostname: rm-keycloak-init-svc
+    depends_on:
+      - rm-keycloak-svc
+      - rm-postgresql-svc
+    environment:
+      - SERVICE_PROFILES=${COMPOSE_PROFILES}
+      - LEGACY_REST_BASIC_AUTH_ENABLED=${LEGACY_REST_BASIC_AUTH_ENABLED}
+      - PUBLIC_URL=${PUBLIC_URL}
+      - SSO_PUBLIC_URL=${SSO_PUBLIC_URL}
+      - DEBUG=false
+    volumes:
+      - ./ssl:/tmp/ssl
+      - ./.env:/rapidminer/.env
+      - ./docker-compose.yml:/docker-compose.yml:ro
+      - keycloak-admin-cli-vol:/rapidminer/.keycloak/
+      - deployed-services-vol:/rapidminer/deployed-services/
+      - ./go/saml/:/go/saml/
+      - ./go/licenses/:/go/licenses/
+    networks:
+      rm-platform-int-net:
+        aliases:
+          - rm-init-svc
+      rm-server-db-net:
+        aliases:
+          - rm-init-svc
+
+  rm-postgresql-svc:
+    image: "${REGISTRY}postgres-9.6:${POSTGRES_VERSION}"
+    hostname: rm-postgresql-svc
+    restart: always
+    environment:
+     - POSTGRES_DB=${SERVER_DBSCHEMA}
+     - POSTGRES_USER=${SERVER_DBUSER}
+     - POSTGRES_PASSWORD=${SERVER_DBPASS}
+     - POSTGRES_INITDB_ARGS=${POSTGRES_INITDB_ARGS}
+    volumes:
+     - rm-postgresql-vol:/var/lib/postgresql/data
+    networks:
+      rm-server-db-net:
+        aliases:
+         - rm-postgresql-svc
+
+  rm-server-svc:
+    image: "${REGISTRY}rapidminer-server:${SERVER_VERSION}"
+    hostname: rm-server-svc
+    restart: always
+    environment:
+      - PA_BASE_URL=${PA_BACKEND}
+      - PA_SYNC_DEBUG=False
+#      This may be useful, if server and platform-admin are not on an internal network
+#      - PA_SYNC_AUTH_USER=admin
+#      - PA_SYNC_AUTH_PASS=changeit
+      - DBHOST=${SERVER_DBHOST}
+      - DBSCHEMA=${SERVER_DBSCHEMA}
+      - DBUSER=${SERVER_DBUSER}
+      - DBPASS=${SERVER_DBPASS}
+      - SSO_PUBLIC_URL=${SSO_PUBLIC_URL}
+      - SSO_IDP_REALM=${SSO_IDP_REALM}
+      - SSO_CLIENT_ID=${RMSERVER_SSO_CLIENT_ID}
+      - SSO_CLIENT_SECRET=${RMSERVER_SSO_CLIENT_SECRET}
+      - SSO_SSL_REQUIRED=${SSO_SSL_REQUIRED}
+      - LEGACY_REST_BASIC_AUTH_ENABLED=${LEGACY_REST_BASIC_AUTH_ENABLED}
+      - SERVER_MAX_MEMORY=${SERVER_MAX_MEMORY}
+      - BROKER_ACTIVEMQ_USERNAME=${BROKER_ACTIVEMQ_USERNAME}
+      - BROKER_ACTIVEMQ_PASSWORD=${BROKER_ACTIVEMQ_PASSWORD}
+      - JOBSERVICE_AUTH_SECRET=${AUTH_SECRET}
+      - JUPYTER_URL_SUFFIX=${JUPYTER_URL_SUFFIX}
+      - GRAFANA_URL_SUFFIX=${GRAFANA_URL_SUFFIX}
+      #- PROXY_HTTP_PORT=1080
+      #- PROXY_HTTPS_PORT=1443
+      - TZ=${TZ}
+      - CES_VERSION=${CES_VERSION}
+    volumes:
+      - rm-server-bootstrap-vol:/bootstrap.d
+      - rm-server-home-vol:/persistent-rapidminer-home
+      - rm-coding-shared-vol:/opt/coding-shared/:ro
+    depends_on:
+      - rm-postgresql-svc
+    profiles:
+      - server
+    networks:
+      jupyterhub-user-net:
+        aliases:
+         - rm-server-svc
+      rm-platform-int-net:
+        aliases:
+         - rm-server-svc
+      rm-server-db-net:
+        aliases:
+         - rm-server-svc
+
+  rm-server-job-agent-svc:
+    image: "${REGISTRY}rapidminer-execution-jobagent:${JOBAGENT_VERSION}"
+    hostname: rm-server-job-agent-svc
+    restart: always
+    environment:
+      - RAPIDMINER_SERVER_HOST=${RAPIDMINER_SERVER_HOST}
+      - RAPIDMINER_SERVER_PROTOCOL=${RAPIDMINER_SERVER_PROTOCOL}
+      - RAPIDMINER_SERVER_PORT=${RAPIDMINER_SERVER_PORT}
+      - JOBAGENT_QUEUE_ACTIVEMQ_URI=${JOBAGENT_QUEUE_ACTIVEMQ_URI}
+      - JOBAGENT_QUEUE_ACTIVEMQ_USERNAME=${BROKER_ACTIVEMQ_USERNAME}
+      - JOBAGENT_QUEUE_ACTIVEMQ_PASSWORD=${BROKER_ACTIVEMQ_PASSWORD}
+      - JOBAGENT_AUTH_SECRET=${AUTH_SECRET}
+      - JOBAGENT_CONTAINER_COUNT=${JOBAGENT_CONTAINER_COUNT}
+      - JOB_QUEUE=${JOB_QUEUE}
+      - JOBAGENT_CONTAINER_MEMORYLIMIT=${JOBAGENT_CONTAINER_MEMORYLIMIT}
+      - RAPIDMINER_JOBAGENT_OPTS=${RAPIDMINER_JOBAGENT_OPTS}
+      - TZ=${TZ}
+      - INIT_SHARED_CONDA_SETTINGS=${INIT_SHARED_CONDA_SETTINGS}
+      - CES_VERSION=${CES_VERSION}
+    volumes:
+      - rm-server-bootstrap-ja-vol:/bootstrap.d
+      - rm-coding-shared-vol:/opt/coding-shared/:ro
+      - rm-server-ja-extensions:/rapidminer-jobagent/home/resources/extensions:rw
+      - rm-server-ja-log-vol:/rapidminer-jobagent/home/log
+      - rm-server-ja-data-vol:/rapidminer-jobagent/home/data
+      - rm-server-ja-config-vol:/rapidminer-jobagent/home/config
+    depends_on:
+      - rm-server-svc
+    networks:
+      rm-platform-int-net:
+        aliases:
+         - rm-server-job-agent-svc
+    profiles:
+      - job-agent
+
+  rm-radoop-proxy-svc:
+    image: "${REGISTRY}radoop-proxy:${RADOOP_PROXY_VERSION}"
+    hostname: rm-radoop-proxy-svc
+    restart: always
+    environment:
+      - AUTHENTICATION=${RADOOP_PROXY_AUTHENTICATION}
+      - SUPERUSERNAME=${RADOOP_PROXY_SUPERUSERNAME}
+      - SUPERUSERPASSWORD=${RADOOP_PROXY_SUPERUSERPASSWORD}
+      - PORT=${RADOOP_PROXY_PORT}
+      - WORKERSPOOLSIZE=${RADOOP_PROXY_WORKERSPOOLSIZE}
+      - SSL=${RADOOP_PROXY_SSL}
+      - SERVERHOST=${RAPIDMINER_SERVER_HOST}
+      - SERVERPORT=${RAPIDMINER_SERVER_PORT}
+      #- SCHEME
+    ports:
+      # has to be the same number for internal and external ports.
+      - 0.0.0.0:${RADOOP_PROXY_PORT}:${RADOOP_PROXY_PORT}
+    profiles:
+      - radoop_proxy
+    #depends_on:
+      #- rm-server-svc
+
+  platform-admin-webui-svc:
+    image: "${REGISTRY}rapidminer-platform-admin-webui:${PA_VERSION}"
+    hostname: platform-admin-webui-svc
+    restart: always
+    environment:
+      - PA_URL_SUFFIX=${PA_URL_SUFFIX}
+      - RTS_SCORING_URL_SUFFIX=${RTS_SCORING_URL_SUFFIX}
+      - RTS_SCORING_BACKEND=${RTS_SCORING_BACKEND}
+      - SSO_PUBLIC_URL=${SSO_PUBLIC_URL}
+      - SSO_IDP_REALM=${SSO_IDP_REALM}
+      - SSO_CLIENT_ID=${PA_SSO_CLIENT_ID}
+      - SSO_CLIENT_SECRET=${PA_SSO_CLIENT_SECRET}
+      - PA_DISABLE_PYTHON=${PA_DISABLE_PYTHON}
+      - PA_DISABLE_RTS=${PA_DISABLE_RTS}
+      - DEBUG=false
+      - CES_VERSION=${CES_VERSION}
+    volumes:
+      - platform-admin-uploaded-vol:/var/www/html/uploaded/
+      - rts-licenses-vol:/var/www/html/uploaded/licenses/
+    networks:
+      jupyterhub-user-net:
+        aliases:
+         - platform-admin-webui-svc
+      rm-platform-int-net:
+        aliases:
+         - platform-admin-webui-svc
+      rm-coding-environment-storage-net:
+        aliases:
+         - platform-admin-webui-svc
+    profiles:
+      - platform-admin
+
+  rts-agent-svc:
+    image: "${REGISTRY}rapidminer-execution-scoring:${RTS_VERSION}"
+    hostname: rts-agent-svc
+    restart: always
+    environment:
+      - WAIT_FOR_LICENSES=${WAIT_FOR_LICENSES}
+      - TZ=${TZ}
+      - CES_VERSION=${CES_VERSION}
+      - INIT_SHARED_CONDA_SETTINGS=true
+      - SPRING_PROFILES_ACTIVE=${SCORING_AGENT_SPRING_PROFILES_ACTIVE}
+      - SCORING_AGENT_ENABLESERVERLICENSE=${SCORING_AGENT_ENABLESERVERLICENSE}
+      - DEBUG=false
+    volumes:
+      - rts-deployments-vol:/rapidminer-scoring-agent/home/deployments/
+      - rts-licenses-vol:/rapidminer-scoring-agent/home/resources/licenses
+      - rm-coding-shared-vol:/opt/coding-shared/:ro
+      - rm-server-ja-extensions:/rapidminer-scoring-agent/home/resources/extensions:ro
+    networks:
+      rm-platform-int-net:
+        aliases:
+         - rts-agent-svc
+    profiles:
+      - rts
+
+  rm-jupyterhub-db-svc:
+    image: "${REGISTRY}rapidminer-jupyterhub-postgres:${RM_JUPYTER_VERSION}"
+    hostname: rm-jupyterhub-db-svc
+    restart: always
+    environment:
+      - POSTGRESQL_DATABASE=${JHUB_POSTGRES_DB}
+      - POSTGRESQL_USER=${JHUB_POSTGRES_USER}
+      - POSTGRESQL_PASSWORD=${JHUB_POSTGRES_PASSWORD}
+    volumes:
+      - jupyterhub-postgresql-vol:/var/lib/postgresql/data
+    networks:
+      jupyterhub-user-net:
+        aliases:
+         - rm-jupyterhub-db-svc
+    profiles:
+      - jupyter
+
+  rm-jupyterhub-svc:
+    image: "${REGISTRY}rapidminer-jupyterhub-jupyterhub:${RM_JUPYTER_VERSION}"
+    hostname: rm-jupyterhub-svc
+    restart: always
+    environment:
+      - RM_JUPYTER_VERSION=${RM_JUPYTER_VERSION}
+      - JHUB_HOSTNAME=${JHUB_HOSTNAME}
+      - SERVER_BASE_URL=${RAPIDMINER_SERVER_URL}
+      - POSTGRES_HOST=${JHUB_POSTGRES_HOST}
+      - POSTGRES_DB=${JHUB_POSTGRES_DB}
+      - POSTGRES_USER=${JHUB_POSTGRES_USER}
+      - POSTGRES_PASSWORD=${JHUB_POSTGRES_PASSWORD}
+      - DOCKER_NOTEBOOK_IMAGE=${REGISTRY}rapidminer-jupyter_notebook:${RM_JUPYTER_VERSION}
+      - JUPYTERHUB_CRYPT_KEY=${JUPYTERHUB_CRYPT_KEY}
+      - DOCKER_NOTEBOOK_CPU_LIMIT=${DOCKER_NOTEBOOK_CPU_LIMIT}
+      - DOCKER_NOTEBOOK_MEM_LIMIT=${DOCKER_NOTEBOOK_MEM_LIMIT}
+      - JHUB_DEBUG=${JHUB_DEBUG}
+      - JHUB_TOKEN_DEBUG=${JHUB_TOKEN_DEBUG}
+      - JHUB_PROXY_DEBUG=${JHUB_PROXY_DEBUG}
+      - JHUB_DB_DEBUG=${JHUB_DB_DEBUG}
+      - JHUB_SPAWNER_DEBUG=${JHUB_SPAWNER_DEBUG}
+      - JUPYTER_STACK_NAME=${JUPYTER_STACK_NAME}
+      - SSO_NB_UID_KEY=${SSO_NB_UID_KEY}
+      - SSO_NB_GID_KEY=${SSO_NB_GID_KEY}
+      - SSO_NB_CUSTOM_BIND_MOUNTS_KEY=${SSO_NB_CUSTOM_BIND_MOUNTS_KEY}
+      - JUPYTER_NB_CUSTOM_BIND_MOUNTS=${JUPYTER_NB_CUSTOM_BIND_MOUNTS}
+      - SSO_PUBLIC_URL=${SSO_PUBLIC_URL}
+      - SSO_IDP_REALM=${SSO_IDP_REALM}
+      - SSO_CLIENT_ID=${JHUB_SSO_CLIENT_ID}
+      - SSO_CLIENT_SECRET=${JHUB_SSO_CLIENT_SECRET}
+      - PUBLIC_URL=${PUBLIC_URL}
+      - JUPYTER_URL_SUFFIX=${JUPYTER_URL_SUFFIX}
+      - SSO_USERNAME_KEY=preferred_username
+      - SSO_RESOURCE_ACCESS_KEY=resource_access
+      - JHUB_DEFAULT_ENV_NAME=aihub-${RM_JUPYTER_VERSION}-python
+      - JHUB_SPAWNER=${JHUB_SPAWNER}
+      - JHUB_API_PROTOCOL=${JHUB_API_PROTOCOL}
+      - JHUB_API_HOSTNAME=${JHUB_API_HOSTNAME}
+      - JHUB_PROXY_PORT=${JHUB_PROXY_PORT}
+      - JHUB_API_PORT=${JHUB_API_PORT}
+      - JHUB_ENV_VOLUME_NAME=${JHUB_ENV_VOLUME_NAME}
+#      - JHUB_CUSTOM_CA_CERTS=${JHUB_CUSTOM_CA_CERTS}
+#      - JHUB_K8S_NAMESPACE=${JHUB_K8S_NAMESPACE}
+#      - JHUB_K8S_NODE_SELECTOR_NAME=${JHUB_K8S_NODE_SELECTOR_NAME}
+#      - JHUB_K8S_NODE_SELECTOR_VALUE=${JHUB_K8S_NODE_SELECTOR_VALUE}
+#      - JHUB_K8S_NOTEBOOK_STORAGE_ACCESS_MODE=${JHUB_K8S_NOTEBOOK_STORAGE_ACCESS_MODE}
+#      - JHUB_K8S_NOTEBOOK_STORAGE_CAPACITY=${JHUB_K8S_NOTEBOOK_STORAGE_CAPACITY}
+#      - JHUB_K8S_NOTEBOOK_STORAGE_CLASS=${JHUB_K8S_NOTEBOOK_STORAGE_CLASS}
+#      - JHUB_K8S_IMAGE_PULL_SECRET=${JHUB_K8S_IMAGE_PULL_SECRET}
+#      - JHUB_K8S_ENV_PVC_NAME=${JHUB_K8S_ENV_PVC_NAME}
+#      - JHUB_K8S_ENV_PVC_SUBPATH=${JHUB_K8S_ENV_PVC_SUBPATH}
+      - JHUB_DOCKER_DISABLE_NOTEBOOK_IMAGE_PULL_AT_STARTUP=${JHUB_DOCKER_DISABLE_NOTEBOOK_IMAGE_PULL_AT_STARTUP}
+      - JHUB_DISABLE_AIHUB_TOKEN_REQUESTS=${JHUB_DISABLE_AIHUB_TOKEN_REQUESTS}
+    volumes:
+      # Use this if docker service run as root
+      - /var/run/docker.sock:/var/run/docker.sock:rw
+      # Use this if docker service run as user (pay attention for UID)
+      #- /run/user/1000/docker.sock:/var/run/docker.sock:rw
+    depends_on:
+      - rm-jupyterhub-db-svc
+      - rm-server-svc
+    networks:
+      rm-platform-int-net:
+        aliases:
+         - rm-jupyterhub-svc
+      jupyterhub-user-net:
+        aliases:
+         - rm-jupyterhub-svc
+    profiles:
+      - jupyter
+
+  rm-coding-environment-storage-svc:
+    image: "${REGISTRY}rapidminer-coding-environment-storage:${CES_VERSION}"
+    hostname: rm-coding-environment-storage-svc
+    restart: always
+    environment:
+      - PA_BACKEND=${PA_BACKEND}
+      - PA_SYNC_DEBUG=False
+    networks:
+      rm-coding-environment-storage-net:
+        aliases:
+         - rm-coding-environment-storage-svc
+    depends_on:
+      - platform-admin-webui-svc
+    volumes:
+      - rm-coding-shared-vol:/opt/coding-shared/
+    profiles:
+      - ces
+
+  rm-grafana-svc:
+    image: "${REGISTRY}rapidminer-grafana:${RM_GRAFANA_VERSION}"
+    hostname: rm-grafana-svc
+    restart: always
+    environment:
+      - PUBLIC_URL=${PUBLIC_URL}
+      - GRAFANA_URL_SUFFIX=${GRAFANA_URL_SUFFIX}
+      #- GF_LOG_LEVEL=debug
+      - SSO_PUBLIC_URL=${SSO_PUBLIC_URL}
+      - SSO_IDP_REALM=${SSO_IDP_REALM}
+      - SSO_CLIENT_ID=${GRAFANA_SSO_CLIENT_ID}
+      - SSO_CLIENT_SECRET=${GRAFANA_SSO_CLIENT_SECRET}
+      - TZ=${TZ}
+    volumes:
+      - grafana-home:/var/lib/grafana
+    depends_on:
+      - rm-grafana-proxy-svc
+    networks:
+      rm-platform-int-net:
+        aliases:
+         - rm-grafana-svc
+    profiles:
+      - grafana
+
+  rm-grafana-proxy-svc:
+    image: "${REGISTRY}rapidminer-grafana-proxy:${RM_GRAFANA_VERSION}"
+    hostname: rm-grafana-proxy-svc
+    restart: always
+    environment:
+      - RAPIDMINER_URL=${RAPIDMINER_SERVER_URL}
+      # Comma spearated list of RTSA URLs (http://rts-agent-svc:8090,https://rts-agent2-svc:8888)
+      - RTSA_DEPLOYMENTS=${RTS_SCORING_BACKEND}
+      - GRAFANA_PROXY_LOGGING_LEVEL=${GRAFANA_PROXY_LOGGING_LEVEL}
+      - LOG_RESPONSE_DATA=${GRAFANA_PROXY_LOG_RESPONSE_DATA}
+    depends_on:
+      - rm-server-svc
+    networks:
+      rm-platform-int-net:
+        aliases:
+         - rm-grafana-proxy-svc
+    profiles:
+      - grafana
+
+  rm-tabgo-proxy-svc:
+    image: "${REGISTRY}rapidminer-tabgo-proxy:${TABGO_VERSION}"
+    hostname: rm-tabgo-proxy-svc
+    restart: always
+    environment:
+      - HTTPS_CRT_PATH=${HTTPS_CRT_PATH}
+      - HTTPS_KEY_PATH=${HTTPS_KEY_PATH}
+      - TABGO_BACKEND=${TABGO_BACKEND}
+      - TABGO_PORT=${TABGO_PORT}
+    ports:
+      - 0.0.0.0:${TABGO_PROXY_PORT}:443
+    volumes:
+      - ./ssl:/etc/nginx/ssl
+    networks:
+      rm-platform-int-net:
+        aliases:
+         - rm-tabgo-proxy-svc
+    profiles:
+      - tabgo
+
+  rm-tabgo-svc:
+    image: "${REGISTRY}rapidminer-tabgo:${TABGO_VERSION}"
+    restart: always
+    hostname: rm-tabgo-svc
+    environment:
+      - TABGO_MAX_MEMORY=${TABGO_MAX_MEMORY}
+      - TABGO_RMS_HOSTNAME=${RAPIDMINER_SERVER_URL}
+      - TABGO_GO_HOSTNAME=${PUBLIC_URL}
+      - TABGO_SMALL_REQUEST_LIMIT=${TABGO_SMALL_REQUEST_LIMIT}
+      - TABGO_SMALL_REQUEST_INTERVAL=${TABGO_SMALL_REQUEST_INTERVAL}
+      - TABGO_LOG_LEVEL=${TABGO_LOG_LEVEL}
+      - _JAVA_OPTIONS=${TABGO_JAVA_OPTIONS}
+    networks:
+      rm-platform-int-net:
+        aliases:
+         - rm-tabgo-svc
+    profiles:
+      - tabgo
+
+  landing-page:
+    image: "${REGISTRY}rapidminer-deployment-landing-page:${RM_LANDING_VERSION}"
+    restart: always
+    hostname: landing-page
+    environment:
+      - SSO_PUBLIC_URL=${SSO_PUBLIC_URL}
+      - SSO_IDP_REALM=${SSO_IDP_REALM}
+      - SSO_CLIENT_ID=${LANDING_SSO_CLIENT_ID}
+      - SSO_CLIENT_SECRET=${LANDING_SSO_CLIENT_SECRET}
+      - DEBUG=false
+    volumes:
+      - rm-landing-page-vol:/var/www/html/uploaded/
+      - deployed-services-vol:/rapidminer/deployed-services/
+    networks:
+      rm-platform-int-net:
+        aliases:
+         - landing-page
+    profiles:
+      - landing-page
+
+  rm-token-tool-svc:
+    image: "${REGISTRY}rapidminer-deployment-landing-page:${RM_LANDING_VERSION}"
+    restart: always
+    hostname: rm-token-tool
+    environment:
+    - PUBLIC_URL=${PUBLIC_URL}
+    - SSO_PUBLIC_URL=${SSO_PUBLIC_URL}
+    - SSO_IDP_REALM=${SSO_IDP_REALM}
+    - SSO_CLIENT_ID=${TOKEN_SSO_CLIENT_ID}
+    - SSO_CLIENT_SECRET=${TOKEN_SSO_CLIENT_SECRET}
+    - DEBUG=false
+    - SSO_CUSTOM_SCOPE=openid info offline_access
+    - CUSTOM_URL_SUFFIX=${TOKEN_URL_SUFFIX}
+    - CUSTOM_CONTENT=get-token
+    volumes:
+      - rm-token-tool-vol:/var/www/html/uploaded/
+    networks:
+      rm-platform-int-net:
+        aliases:
+        - rm-token-tool
+    profiles:
+      - token-tool
+
+  # ###############################################
+  #
+  # RapidMiner GO
+  #
+  # ###############################################
+
+  # Frontend and API router
+  rapidminer-automodel-routing:
+    image: "rapidminer/rapidminer-automodel-routing:${GO_IMAGE_TAG_ROUTING}"
+    hostname: rapidminer-automodel-routing
+    environment:
+      RMID_HOST_PORT_1: ${GO_ROUTING_RMID_HOST_PORT_1}
+      AM_HOST_PORT_1: ${GO_ROUTING_AM_HOST_PORT_1}
+      EVENT_HOST_PORT: ${GO_ROUTING_EVENT_HOST_PORT}
+      DQ_HOST_PORT_1: ${GO_ROUTING_DQ_HOST_PORT_1}
+      RESOLVER: ${GO_ROUTING_RESOLVER}
+      SERVER_NAME: ${GO_ROUTING_SERVER_NAME}
+      PROTOCOL: ${GO_ROUTING_PROTOCOL}
+    depends_on:
+      - rapidminer-automodeler
+      - rapidminer-automodel-rmid
+    restart: always
+    networks:
+      rm-go-proxy-net:
+        aliases:
+         - rapidminer-automodel-routing
+      rm-go-int-net:
+        aliases:
+         - rapidminer-automodel-routing
+    profiles:
+      - go
+  rapidminer-automodel-rmid:
+    image: "rapidminer/rapidminer-automodel-rmid:${GO_IMAGE_TAG_RMID}"
+    hostname: rapidminer-automodel-rmid
+    environment:
+      SPRING_PROFILES_ACTIVE: ${GO_RMID_SPRING_PROFILES_ACTIVE}
+      DB_HOST: ${GO_DB_HOST}
+      DB_USER: ${GO_RMID_DB_USER}
+      DB_PASSWORD: ${GO_RMID_DB_PASSWORD}
+      DB_NAME: ${GO_RMID_DB_NAME}
+      _JAVA_OPTIONS: ${GO_RMID_JAVA_OPTIONS}
+      BASE_URL: ${PUBLIC_URL}
+      AUTH_SECRET: ${GO_AUTH_SECRET}
+      RMID_FRONTEND_TRACKING_ENABLED: ${GO_RMID_FRONTEND_TRACKING_ENABLED}
+      TOKEN_MAX_AGE: ${GO_RMID_TOKEN_MAX_AGE}
+      LOGIN_TYPE: ${GO_RMID_LOGIN_TYPE}
+      SAML_ENTITY_ID: ${GO_SSO_CLIENT_ID}
+      SAML_KEYSTORE_PASSWORD: ${GO_RMID_SAML_KEYSTORE_PASSWORD}
+      SAML_KEYSTORE_ALIAS: ${GO_RMID_SAML_KEYSTORE_ALIAS}
+      RMID_FRONTEND_AUTO_LOGIN: "true"
+      AM_BASE_URL: http://rapidminer-automodeler:8080
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/rmid/system/health"]
+    restart: always
+    volumes:
+      - ./go/saml:/rapidminer-automodel-rmid/saml
+      - ./go/branding/rmid:/rapidminer-automodeler/branding
+    depends_on:
+      - rapidminer-automodel-db
+    networks:
+      rm-go-int-net:
+        aliases:
+         - rapidminer-automodel-rmid
+    profiles:
+      - go
+  rapidminer-automodeler:
+    image: "rapidminer/rapidminer-automodeler:${GO_IMAGE_TAG_AM}"
+    hostname: rapidminer-automodeler
+    environment:
+      SPRING_PROFILES_ACTIVE: ${GO_AUTOMODELER_SPRING_PROFILES_ACTIVE}
+      SPRING_SERVLET_MULTIPART_MAX_FILE_SIZE: ${GO_AUTOMODELER_SPRING_SERVLET_MULTIPART_MAX_FILE_SIZE}
+      _JAVA_OPTIONS: ${GO_AUTOMODELER_JAVA_OPTIONS}
+      DB_HOST: ${GO_DB_HOST}
+      DB_USER: ${GO_AUTOMODELER_DB_USER}
+      DB_PASSWORD: ${GO_AUTOMODELER_DB_PASSWORD}
+      DB_NAME: ${GO_AUTOMODELER_DB_NAME}
+      BASE_URL: ${PUBLIC_URL}
+      RMID_BASE_URL: ${GO_AUTOMODELER_RMID_BASE_URL}
+      DQ_BASE_URL:  ${GO_AUTOMODELER_RMID_BASE_URL}
+      AMQ_URL: ${GO_AMQ_URL}
+      AMQ_USERNAME: ${GO_ACTIVEMQ_ADMIN_LOGIN}
+      AMQ_PASSWORD: ${GO_ACTIVEMQ_ADMIN_PASSWORD}
+      AUTH_SECRET: ${GO_AUTH_SECRET}
+      AUTOMODELER_DEPLOYMENT_TIME_SERIES_ENABLED: 'true'
+      AUTOMODELER_FRONTEND_TRACKING_ENABLED: ${GO_AUTOMODELER_FRONTEND_TRACKING_ENABLED}
+      AUTOMODELER_FILESTORE_MIN_ROW_LIMIT: ${GO_AUTOMODELER_FILESTORE_MIN_ROW_LIMIT}
+      AUTOMODELER_EXECUTION_TASK_LIMIT_PER_USER: ${GO_AUTOMODELER_EXECUTION_TASK_LIMIT_PER_USER}
+      AUTOMODELER_EXECUTION_QUEUE_LIMIT_PER_USER: ${GO_JOB_CONTAINERS}
+      AUTOMODELER_EXECUTION_MAXIMUM_TOTAL_RESULT_SIZE: ${GO_AUTOMODELER_EXECUTION_MAXIMUM_TOTAL_RESULT_SIZE}
+      AUTOMODELER_DATA_IMPORT_MINIMUM_ATTRIBUTE_COUNT: ${GO_AUTOMODELER_DATA_IMPORT_MINIMUM_ATTRIBUTE_COUNT}
+      AUTOMODELER_DATA_IMPORT_MAXIMUM_ATTRIBUTE_COUNT: ${GO_AUTOMODELER_DATA_IMPORT_MAXIMUM_ATTRIBUTE_COUNT}
+      JOB_QUEUE: ${GO_JOB_QUEUE}
+      JOB_STATUS_QUEUE: ${GO_JOB_STATUS_QUEUE}
+      JOB_COMMAND_TOPIC: ${GO_JOB_COMMAND_TOPIC}
+    volumes:
+      - rapidminer_automodel_shared:/rapidminer-automodeler/shared
+      - ./go/licenses:/rapidminer-automodeler/shared/licenses
+      - ./go/branding/am:/rapidminer-automodeler/branding
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/am/system/health"]
+    restart: always
+    depends_on:
+      - rapidminer-automodel-activemq
+      - rapidminer-automodel-db
+    networks:
+      rm-go-int-net:
+        aliases:
+         - rapidminer-automodeler
+    profiles:
+      - go
+  rapidminer-automodel-job-container:
+    image: "rapidminer/rapidminer-automodel-job-container:${GO_IMAGE_TAG_JC}"
+    hostname: rapidminer-automodel-job-container
+    environment:
+      # Be aware that additional env vars might be set in Dockerfile
+      #      (e.g. JOBCONTAINER_BASEDIR: /rapidminer-automodel-job-container)
+      SPRING_PROFILES_ACTIVE: ${GO_JC_SPRING_PROFILES_ACTIVE}
+      _JAVA_OPTIONS: ${GO_JC_JAVA_OPTIONS}
+      JOB_QUEUE: ${GO_JOB_QUEUE}
+      JOB_STATUS_QUEUE: ${GO_JOB_STATUS_QUEUE}
+      JOB_COMMAND_TOPIC: ${GO_JOB_COMMAND_TOPIC}
+      AMQ_URL: ${GO_AMQ_URL}
+      AMQ_REST_URL: ${GO_AMQ_REST_URL}
+      AMQ_USERNAME: ${GO_ACTIVEMQ_ADMIN_LOGIN}
+      AMQ_PASSWORD: ${GO_ACTIVEMQ_ADMIN_PASSWORD}
+    volumes:
+      - rapidminer_automodel_shared:/rapidminer-automodel-job-container/shared
+      - ./go/licenses:/rapidminer-automodel-job-container/shared/licenses
+    depends_on:
+      - rapidminer-automodeler
+    restart: always
+    networks:
+      rm-go-int-net:
+        aliases:
+         - rapidminer-automodel-job-container
+    profiles:
+      - go
+  rapidminer-ui-event-tracking:
+    image: "rapidminer/rapidminer-ui-event-tracking:${GO_IMAGE_TAG_ET}"
+    hostname: rapidminer-ui-event-tracking
+    environment:
+      _JAVA_OPTIONS: ${GO_ET_JAVA_OPTIONS}
+      DB_HOST: ${GO_DB_HOST}
+      DB_USER: ${GO_AUTOMODELER_DB_USER}
+      DB_PASSWORD: ${GO_AUTOMODELER_DB_PASSWORD}
+      DB_NAME: ${GO_AUTOMODELER_DB_NAME}
+    depends_on:
+      - rapidminer-automodeler
+    restart: always
+    networks:
+      rm-go-int-net:
+        aliases:
+         - rapidminer-ui-event-tracking
+    profiles:
+      - go
+  rapidminer-automodel-db:
+    image: "${REGISTRY}postgres-9.6:${POSTGRES_VERSION}"
+    hostname: rapidminer-automodel-db
+    volumes:
+      - rapidminer_automodel_dbdata:/var/lib/postgresql/data
+      - ./go/docker-entrypoint-initdb.d:/docker-entrypoint-initdb.d
+    networks:
+      rm-go-int-net:
+        aliases:
+         - rapidminer-automodel-db
+    environment:
+      AUTOMODELER_DB_USER: ${GO_AUTOMODELER_DB_USER}
+      AUTOMODELER_DB_PASSWORD: ${GO_AUTOMODELER_DB_PASSWORD}
+      AUTOMODELER_DB_NAME: ${GO_AUTOMODELER_DB_NAME}
+      RMID_DB_USER: ${GO_RMID_DB_USER}
+      RMID_DB_PASSWORD: ${GO_RMID_DB_PASSWORD}
+      RMID_DB_NAME: ${GO_RMID_DB_NAME}
+      POSTGRES_PASSWORD: ${GO_POSTGRES_PASSWORD}
+      POSTGRES_USER: ${GO_POSTGRES_USER}
+    profiles:
+      - go
+    #ports:
+    #  - "5432:5432"
+  rapidminer-automodel-activemq:
+    image: "webcenter/activemq:5.14.3"
+    hostname: rapidminer-automodel-activemq
+    environment:
+      ACTIVEMQ_CONFIG_DEFAULTACCOUNT: ${GO_ACTIVEMQ_CONFIG_DEFAULTACCOUNT}
+      ACTIVEMQ_ADMIN_LOGIN: ${GO_ACTIVEMQ_ADMIN_LOGIN}
+      ACTIVEMQ_ADMIN_PASSWORD: ${GO_ACTIVEMQ_ADMIN_PASSWORD}
+      ACTIVEMQ_JMX_ADMIN_PASSWORD: ${GO_ACTIVEMQ_ADMIN_PASSWORD}
+      ACTIVEMQ_JMX_ADMIN_ROLE: readwrite
+      ACTIVEMQ_GROUPS_owners: 'admin'
+      ACTIVEMQ_CONFIG_MAXMEMORY: ${GO_AMQ_MAXMEMORY}
+    volumes:
+      - ./go/activemq.xml:/opt/activemq/conf/activemq.xml
+    networks:
+      rm-go-int-net:
+        aliases:
+         - rapidminer-automodel-activemq
+    profiles:
+      - go
+    #ports:
+    #  - "8161:8161"
+    #  - "61616:61616"
+    #  - "61613:61613"
+
+volumes:
+  rm-postgresql-vol:
+  rm-server-bootstrap-vol:
+  rm-server-home-vol:
+  rm-server-bootstrap-ja-vol:
+  rm-server-ja-log-vol:
+  rm-server-ja-data-vol:
+  rm-server-ja-extensions:
+  rm-server-ja-config-vol:
+  platform-admin-uploaded-vol:
+  rts-deployments-vol:
+  rts-licenses-vol:
+  jupyterhub-postgresql-vol:
+  grafana-home:
+  keycloak-postgresql-vol:
+  keycloak-admin-cli-vol:
+  rm-landing-page-vol:
+  rm-token-tool-vol:
+  deployed-services-vol:
+  rm-coding-shared-vol:
+    name: ${JHUB_ENV_VOLUME_NAME}
+  rapidminer_automodel_dbdata:
+  rapidminer_automodel_shared:
+
+networks:
+  rm-platform-int-net:
+  rm-idp-db-net:
+  rm-server-db-net:
+  rm-coding-environment-storage-net:
+  jupyterhub-user-net:
+    name: jupyterhub-user-net-${JUPYTER_STACK_NAME}
+  rm-go-int-net:
+  rm-go-proxy-net:
+

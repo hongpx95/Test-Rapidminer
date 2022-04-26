@@ -1,0 +1,10 @@
+automodeler:
+  branding:
+    headerColor: "#3a4349" # Provide a hex color code for header
+    headerProfileMenu: # To keep the profile menu content provided by Rapidminer then delete all the headerProfileMenu part.
+      # To keep empty the profile menu content, remove the content part.
+      content: null
+    headerHelpMenu: # To keep the help menu content provided by Rapidminer then delete all the headerHelpMenu part.
+      helpMenuAppearance: false # To hide the help menu swap the helpMenuAppearance with "false" value.
+      content: null
+    applicationName: RapidMiner Go # Provide your application name
